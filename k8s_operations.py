@@ -240,15 +240,33 @@ class KubernetesOperations:
             pf = portforward(self.v1.connect_get_namespaced_pod_portforward,
                            pod_name,
                            namespace,
-                           ports=str(pod_port))
+                           ports=[str(pod_port)])
 
             # Запускаем port-forward в отдельном потоке
             def _port_forward():
                 try:
-                    pf.socket(pod_port).connect(('localhost', local_port))
-                    pf.run()
+                    # Получаем сокет для port-forward
+                    sock = pf.socket(pod_port)
+                    if not sock:
+                        print(f"Не удалось создать сокет для порта {pod_port}")
+                        return
+                    
+                    # Создаем локальный сокет для прослушивания
+                    local_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    local_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    local_socket.bind(('localhost', local_port))
+                    local_socket.listen(1)
+                    
+                    # Запускаем port-forward
+                    pf.run_forever()
+                    
                 except Exception as e:
                     print(f"Ошибка в port-forward для пода {pod_name}: {e}")
+                finally:
+                    try:
+                        local_socket.close()
+                    except:
+                        pass
 
             thread = threading.Thread(target=_port_forward, daemon=True)
             thread.start()
