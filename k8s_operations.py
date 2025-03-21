@@ -245,21 +245,20 @@ class KubernetesOperations:
             # Запускаем port-forward в отдельном потоке
             def _port_forward():
                 try:
-                    # Получаем сокет для port-forward
-                    sock = pf.socket(pod_port)
-                    if not sock:
-                        print(f"Не удалось создать сокет для порта {pod_port}")
-                        return
-                    
                     # Создаем локальный сокет для прослушивания
                     local_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     local_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     local_socket.bind(('localhost', local_port))
                     local_socket.listen(1)
-                    
-                    # Запускаем port-forward
-                    pf.run_forever()
-                    
+
+                    while True:
+                        try:
+                            # Запускаем port-forward
+                            pf.run()
+                        except Exception as e:
+                            print(f"Переподключение port-forward для пода {pod_name}: {e}")
+                            time.sleep(1)
+                            
                 except Exception as e:
                     print(f"Ошибка в port-forward для пода {pod_name}: {e}")
                 finally:
