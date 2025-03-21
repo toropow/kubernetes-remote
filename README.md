@@ -264,3 +264,79 @@ k8s.port_forward(
 ## Лицензия
 
 MIT 
+
+## Особенности работы с Port-Forward
+
+Port-forward позволяет создать туннель между локальным портом и портом в поде Kubernetes. В проекте реализовано два способа создания port-forward:
+
+### 1. Использование меток (labels) - рекомендуемый способ
+
+```python
+# Port-forward с использованием метки
+k8s.port_forward(
+    pod_name="any-name",  # Это значение игнорируется при использовании label_selector
+    local_port=8888,
+    pod_port=80,
+    label_selector="app=my-app"  # Используем метку из deployment.yaml
+)
+```
+
+Преимущества этого подхода:
+- Автоматически находит правильное имя пода
+- Ожидает готовности пода перед созданием port-forward
+- Работает даже после перезапуска подов
+- Не зависит от конкретного имени пода
+
+### 2. Использование имени пода
+
+```python
+# Сначала получаем имя пода по метке
+pod_name = k8s.get_pod_name_by_label("app=my-app")
+if pod_name:
+    # Затем делаем port-forward по имени пода
+    k8s.port_forward(
+        pod_name=pod_name,
+        local_port=8888,
+        pod_port=80
+    )
+```
+
+### Пример deployment.yaml с метками
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-deployment
+spec:
+  selector:
+    matchLabels:
+      app: example-app  # Эта метка используется для поиска пода
+  template:
+    metadata:
+      labels:
+        app: example-app  # Эта метка должна совпадать с matchLabels
+    spec:
+      containers:
+      - name: example-container
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+```
+
+### Управление port-forward
+
+```python
+# Остановка конкретного port-forward
+k8s.stop_port_forward("pod-name", 8888)
+
+# Остановка всех port-forward
+k8s.cleanup()
+```
+
+### Особенности реализации port-forward:
+- Автоматическая проверка доступности портов
+- Запуск в отдельном потоке
+- Ожидание готовности пода при использовании меток
+- Возможность остановки отдельных соединений
+- Автоматическая очистка при завершении работы 

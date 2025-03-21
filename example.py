@@ -35,12 +35,23 @@ def main():
             result = k8s.exec_command_in_pod(pod_name, command=command)
             print(f"Результат выполнения команды в поде: {result}")
 
-            # Создаем port-forward к поду
+            # Создаем port-forward к поду используя метку
             k8s.port_forward(
-                pod_name=pod_name,
+                pod_name="example-pod",  # Это значение игнорируется при использовании label_selector
                 local_port=8888,
-                pod_port=80
+                pod_port=80,
+                label_selector="app=example-app"  # Используем метку из deployment.yaml
             )
+
+            # Альтернативный способ создания port-forward:
+            # Сначала получаем имя пода по метке
+            pod_name = k8s.get_pod_name_by_label("app=example-app")
+            if pod_name:
+                k8s.port_forward(
+                    pod_name=pod_name,
+                    local_port=8889,
+                    pod_port=80
+                )
 
             # Создаем NodePort service для доступа к приложению извне кластера
             k8s.expose_service_nodeport(
@@ -50,14 +61,12 @@ def main():
                 node_port=30001
             )
 
-            # Получаем логи контейнера
-            logs = containers.get_container_logs("test-app")
-            if logs:
-                print("Логи контейнера:")
-                print(logs)
-
-            print("Приложение работает. Port-forward доступен на localhost:8888")
+            print("Приложение доступно:")
+            print("- Через port-forward (по метке): http://localhost:8888")
+            print("- Через port-forward (по имени пода): http://localhost:8889")
+            print("- Через NodePort: http://localhost:30001")
             print("Нажмите Ctrl+C для завершения...")
+            
             while True:
                 time.sleep(1)
 

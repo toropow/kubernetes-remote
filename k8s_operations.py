@@ -138,20 +138,97 @@ class KubernetesOperations:
             print(f"Ошибка при создании NodePort service: {e}")
             return None
 
-    def port_forward(self, pod_name: str, local_port: int, pod_port: int, namespace: str = "default") -> bool:
+    def get_pod_name_by_label(self, label_selector: str, namespace: str = "default") -> str:
+        """
+        Получает имя пода по метке
+        
+        Args:
+            label_selector: Селектор меток (например, "app=kafka-ui")
+            namespace: Namespace пода
+            
+        Returns:
+            str: Имя пода или None, если под не найден
+        """
+        try:
+            pods = self.v1.list_namespaced_pod(
+                namespace=namespace,
+                label_selector=label_selector
+            )
+            
+            if pods.items:
+                # Берем первый запущенный под
+                for pod in pods.items:
+                    if pod.status.phase == 'Running':
+                        return pod.metadata.name
+                # Если нет запущенных, берем первый под
+                return pods.items[0].metadata.name
+            return None
+        except Exception as e:
+            print(f"Ошибка при поиске пода по метке {label_selector}: {e}")
+            return None
+
+    def wait_for_pod_ready(self, label_selector: str, namespace: str = "default", timeout: int = 60) -> bool:
+        """
+        Ожидает готовности пода
+        
+        Args:
+            label_selector: Селектор меток (например, "app=kafka-ui")
+            namespace: Namespace пода
+            timeout: Таймаут в секундах
+            
+        Returns:
+            bool: True если под готов, False в случае ошибки или таймаута
+        """
+        try:
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                pods = self.v1.list_namespaced_pod(
+                    namespace=namespace,
+                    label_selector=label_selector
+                )
+                
+                if pods.items:
+                    pod = pods.items[0]
+                    if pod.status.phase == 'Running':
+                        # Проверяем, что все контейнеры готовы
+                        if all(container.ready for container in pod.status.container_statuses):
+                            return True
+                
+                time.sleep(2)
+            
+            print(f"Таймаут ожидания готовности пода ({timeout} сек)")
+            return False
+        except Exception as e:
+            print(f"Ошибка при ожидании готовности пода: {e}")
+            return False
+
+    def port_forward(self, pod_name: str, local_port: int, pod_port: int, namespace: str = "default", label_selector: str = None) -> bool:
         """
         Создает port-forward из пода на локальный порт
 
         Args:
-            pod_name: Имя пода
+            pod_name: Имя пода или префикс имени deployment
             local_port: Локальный порт
             pod_port: Порт в поде
             namespace: Namespace пода
+            label_selector: Селектор меток для поиска пода (например, "app=kafka-ui")
 
         Returns:
             bool: True если port-forward успешно создан, False в случае ошибки
         """
         try:
+            # Если указан label_selector, используем его для поиска пода
+            if label_selector:
+                if not self.wait_for_pod_ready(label_selector, namespace, timeout=60):
+                    print(f"Под с меткой {label_selector} не готов")
+                    return False
+                    
+                actual_pod_name = self.get_pod_name_by_label(label_selector, namespace)
+                if not actual_pod_name:
+                    print(f"Не найден под с меткой {label_selector}")
+                    return False
+                pod_name = actual_pod_name
+            
             # Проверяем, не занят ли уже порт
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             if sock.connect_ex(('127.0.0.1', local_port)) == 0:
