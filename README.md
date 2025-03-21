@@ -48,6 +48,16 @@ k8s.create_service("service.yaml")
 # Выполнение команды в поде
 result = k8s.exec_command_in_pod("pod-name", command=["ls", "-la"])
 
+# Создание port-forward
+k8s.port_forward(
+    pod_name="my-pod",
+    local_port=8888,
+    pod_port=80
+)
+
+# Остановка конкретного port-forward
+k8s.stop_port_forward("my-pod", 8888)
+
 # Создание NodePort service
 k8s.expose_service_nodeport(
     service_name="my-service",
@@ -56,7 +66,8 @@ k8s.expose_service_nodeport(
     node_port=30001
 )
 
-# Удаление ресурсов
+# Удаление ресурсов и очистка port-forward
+k8s.cleanup()  # Останавливает все port-forward
 k8s.delete_service("my-service")
 k8s.delete_deployment("my-deployment")
 ```
@@ -121,6 +132,13 @@ def main():
             k8s.create_deployment("deployment.yaml")
             k8s.create_service("service.yaml")
             
+            # Создание port-forward к поду
+            k8s.port_forward(
+                pod_name="example-pod",
+                local_port=8888,
+                pod_port=80
+            )
+
             # Создание NodePort service
             k8s.expose_service_nodeport(
                 service_name="example-service",
@@ -129,12 +147,13 @@ def main():
                 node_port=30001
             )
 
-            # Получение логов
-            logs = containers.get_container_logs("test-app")
-            print("Логи контейнера:", logs)
+            print("Приложение доступно:")
+            print("- Через port-forward: http://localhost:8888")
+            print("- Через NodePort: http://localhost:30001")
 
     finally:
         # Очистка ресурсов
+        k8s.cleanup()  # Останавливает все port-forward
         k8s.delete_service("example-service")
         k8s.delete_deployment("example-deployment")
         containers.cleanup()
@@ -183,11 +202,24 @@ spec:
   type: ClusterIP
 ```
 
+## Особенности работы с Port-Forward
+
+Port-forward позволяет создать туннель между локальным портом и портом в поде Kubernetes. Это полезно для:
+- Отладки приложений в кластере
+- Доступа к сервисам без создания NodePort или LoadBalancer
+- Временного доступа к внутренним сервисам
+
+Особенности реализации:
+- Port-forward запускается в отдельном потоке
+- Автоматическая проверка доступности портов
+- Возможность остановки отдельных port-forward или всех сразу
+- Автоматическая очистка при завершении работы
+
 ## Обработка ошибок
 
 Все методы в модулях включают обработку ошибок и возвращают:
 - Успешный результат операции или
-- `None` в случае ошибки
+- `None`/`False` в случае ошибки
 
 При возникновении ошибок в консоль выводится информативное сообщение об ошибке.
 
@@ -196,6 +228,7 @@ spec:
 - Убедитесь, что файл `~/.kube/config` имеет правильные права доступа
 - Не храните чувствительные данные в коде или конфигурационных файлах
 - Используйте переменные окружения для хранения секретов
+- При использовании port-forward учитывайте, что порты будут доступны локально
 
 ## Лицензия
 

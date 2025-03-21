@@ -35,6 +35,13 @@ def main():
             result = k8s.exec_command_in_pod(pod_name, command=command)
             print(f"Результат выполнения команды в поде: {result}")
 
+            # Создаем port-forward к поду
+            k8s.port_forward(
+                pod_name=pod_name,
+                local_port=8888,
+                pod_port=80
+            )
+
             # Создаем NodePort service для доступа к приложению извне кластера
             k8s.expose_service_nodeport(
                 service_name="example-service",
@@ -49,8 +56,8 @@ def main():
                 print("Логи контейнера:")
                 print(logs)
 
-            # Ждем некоторое время для тестирования
-            print("Приложение работает. Нажмите Ctrl+C для завершения...")
+            print("Приложение работает. Port-forward доступен на localhost:8888")
+            print("Нажмите Ctrl+C для завершения...")
             while True:
                 time.sleep(1)
 
@@ -59,6 +66,7 @@ def main():
     finally:
         # Очистка ресурсов
         print("Очистка ресурсов...")
+        k8s.cleanup()  # Остановка всех port-forward
         k8s.delete_service("example-service")
         k8s.delete_deployment("example-deployment")
         containers.cleanup()
