@@ -407,42 +407,71 @@ class KubernetesOperations:
                 logger.error(f"Порт {local_port} уже используется")
                 return False
 
-            # Создаем port-forward
-            pf = portforward(self.v1.connect_get_namespaced_pod_portforward,
-                           pod_name,
-                           namespace,
-                           ports=[str(pod_port)])
-
-            # Механизм автоматического переподключения
-            def _port_forward():
+            # Реализация port-forward с использованием низкоуровневого API
+            def _port_forwarder():
                 retry = 0
                 while retry < retry_count:
                     try:
                         logger.info(f"Запуск port-forward для пода {pod_name} ({local_port}:{pod_port}), попытка {retry+1}")
-                        pf.run()
-                        # Если run() завершился без исключения, выходим из цикла
-                        break
+                        
+                        # Создаем соединение
+                        api_client = client.ApiClient()
+                        ws_client = stream(
+                            self.v1.connect_get_namespaced_pod_portforward,
+                            pod_name,
+                            namespace,
+                            ports=str(pod_port)
+                        )
+                        
+                        # Настраиваем локальный сервер
+                        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        server_socket.bind(('127.0.0.1', local_port))
+                        server_socket.listen(5)
+                        
+                        logger.info(f"Локальный порт {local_port} слушает соединения")
+                        
+                        # Обработка соединений в цикле
+                        while True:
+                            client_sock, client_addr = server_socket.accept()
+                            logger.info(f"Новое соединение от {client_addr}")
+                            
+                            # Запускаем обработку соединения в отдельном потоке
+                            client_thread = threading.Thread(
+                                target=self._handle_connection,
+                                args=(client_sock, ws_client, pod_port),
+                                daemon=True
+                            )
+                            client_thread.start()
+                            
                     except Exception as e:
                         retry += 1
+                        logger.warning(f"Ошибка в port-forward для пода {pod_name}: {e}. Повторная попытка {retry}/{retry_count}")
+                        time.sleep(2)
                         if retry >= retry_count:
                             logger.error(f"Превышено количество попыток переподключения ({retry_count})")
-                            break
-                        logger.warning(f"Ошибка в port-forward для пода {pod_name}: {e}. Повторная попытка {retry+1}/{retry_count}")
-                        time.sleep(1)
+                            return
+                        
+                    finally:
+                        try:
+                            server_socket.close()
+                        except:
+                            pass
 
-            thread = threading.Thread(target=_port_forward, daemon=True)
-            thread.start()
+            # Запускаем port-forwarder в отдельном потоке
+            forwarder_thread = threading.Thread(target=_port_forwarder, daemon=True)
+            forwarder_thread.start()
 
-            # Сохраняем процесс для возможности остановки
-            self.port_forward_processes[(pod_name, local_port)] = (pf, thread)
+            # Сохраняем для возможности остановки
+            self.port_forward_processes[(pod_name, local_port)] = (forwarder_thread, None)
 
             # Ждем немного, чтобы убедиться, что port-forward запустился
             time.sleep(2)
             
             # Проверяем, что порт теперь доступен
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                sock.connect(('127.0.0.1', local_port))
+                test_sock.connect(('127.0.0.1', local_port))
                 logger.info(f"Port-forward создан: localhost:{local_port} -> pod {pod_name}:{pod_port}")
                 return True
             except:
@@ -450,11 +479,54 @@ class KubernetesOperations:
                 self.stop_port_forward(pod_name, local_port)
                 return False
             finally:
-                sock.close()
+                test_sock.close()
 
         except Exception as e:
             logger.error(f"Ошибка при создании port-forward для пода {pod_name}: {e}")
             return False
+
+    def _handle_connection(self, client_sock, ws_client, pod_port):
+        """
+        Обрабатывает одно соединение к перенаправленному порту
+        
+        Args:
+            client_sock: Сокет клиента
+            ws_client: WebSocket клиент для соединения с API Kubernetes
+            pod_port: Порт пода
+        """
+        try:
+            # Настройка неблокирующего режима
+            client_sock.setblocking(0)
+            ws_client.sock.setblocking(0)
+            
+            while True:
+                # Попытка чтения данных от клиента
+                try:
+                    data = client_sock.recv(4096)
+                    if not data:
+                        break
+                    ws_client.write_channel(ws_client.sock, data)
+                except socket.error:
+                    pass
+                
+                # Попытка чтения данных из WebSocket
+                try:
+                    data = ws_client.read_channel(ws_client.sock)
+                    if not data:
+                        break
+                    client_sock.sendall(data)
+                except socket.error:
+                    pass
+                
+                time.sleep(0.01)  # Небольшая пауза для экономии CPU
+                
+        except Exception as e:
+            logger.error(f"Ошибка при обработке соединения: {e}")
+        finally:
+            try:
+                client_sock.close()
+            except:
+                pass
 
     def stop_port_forward(self, pod_name: str, local_port: int) -> bool:
         """
@@ -470,8 +542,18 @@ class KubernetesOperations:
         try:
             key = (pod_name, local_port)
             if key in self.port_forward_processes:
-                pf, thread = self.port_forward_processes[key]
-                pf.close()
+                thread, _ = self.port_forward_processes[key]
+                
+                # Пытаемся закрыть соединение на порту
+                try:
+                    # Создаем сокет для подключения к порту, чтобы вызвать закрытие
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.connect(('127.0.0.1', local_port))
+                    sock.close()
+                except:
+                    pass
+                
+                # Удаляем процесс из списка
                 del self.port_forward_processes[key]
                 logger.info(f"Port-forward остановлен для пода {pod_name} на порту {local_port}")
                 return True
